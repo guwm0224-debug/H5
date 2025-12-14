@@ -1,4 +1,4 @@
-﻿// ==UserScript==
+// ==UserScript==
 // @name         H5媒体播控器
 // @namespace    http://tampermonkey.net/
 // @version      2.3.1.7
@@ -1043,7 +1043,14 @@
 
             this.isMonitoring = false;
             this.monitoringTimers = [];
+
+            // FPS监控状态
+            this.fpsMonitor = null;
+            this.fpsAnimationFrameId = null;
+            this.requestAnimationFrameFn = null;
+            this.cancelAnimationFrameFn = null;
         }
+
 
         /**
          * 初始化性能监控器
@@ -1070,29 +1077,47 @@
         /**
          * 设置FPS观察器
          */
-        setupFPSObserver() {
-            let lastTime = performance.now();
-            let frameCount = 0;
-
-            const measureFPS = () => {
-                frameCount++;
-                const currentTime = performance.now();
-
-                if (currentTime - lastTime >= 1000) {
-                    const fps = frameCount;
-                    this.addMetric('fps', fps);
-
-                    frameCount = 0;
-                    lastTime = currentTime;
+            setupFPSObserver() {
+                if (this.fpsMonitor) {
+                    return;
                 }
 
-                if (this.isMonitoring) {
-                    requestAnimationFrame(measureFPS);
-                }
-            };
+                const raf = window.requestAnimationFrame || window.webkitRequestAnimationFrame || window.mozRequestAnimationFrame;
+                const caf = window.cancelAnimationFrame || window.webkitCancelAnimationFrame || window.mozCancelAnimationFrame;
 
-            requestAnimationFrame(measureFPS);
-        }
+                if (typeof raf !== 'function') {
+                    console.warn('requestAnimationFrame 不可用，跳过FPS监控');
+                    return;
+                }
+
+                this.requestAnimationFrameFn = raf.bind(window);
+                this.cancelAnimationFrameFn = typeof caf === 'function' ? caf.bind(window) : null;
+
+                let lastTime = performance.now();
+                let frameCount = 0;
+
+                this.fpsMonitor = () => {
+                    frameCount++;
+                    const currentTime = performance.now();
+
+                    if (currentTime - lastTime >= 1000) {
+                        const fps = frameCount;
+                        this.addMetric('fps', fps);
+
+                        frameCount = 0;
+                        lastTime = currentTime;
+                    }
+
+                    if (this.isMonitoring) {
+                        this.fpsAnimationFrameId = this.requestAnimationFrameFn(this.fpsMonitor);
+                    } else {
+                        this.fpsAnimationFrameId = null;
+                    }
+                };
+
+                // 立即安排首次帧检测，保持原有初始化时机
+                this.fpsAnimationFrameId = this.requestAnimationFrameFn(this.fpsMonitor);
+            }
 
         /**
          * 设置内存观察器
@@ -1259,14 +1284,22 @@
         /**
          * 启动监控
          */
-        startMonitoring() {
-            this.isMonitoring = true;
+            startMonitoring() {
+                this.isMonitoring = true;
 
-            const collectTimer = setInterval(() => {
-                this.collectMetrics();
-            }, this.monitoringConfig.collectInterval);
+                if (!this.fpsMonitor) {
+                    this.setupFPSObserver();
+                }
 
-            this.monitoringTimers.push(collectTimer);
+                if (this.fpsMonitor && this.fpsAnimationFrameId === null && typeof this.requestAnimationFrameFn === 'function') {
+                    this.fpsAnimationFrameId = this.requestAnimationFrameFn(this.fpsMonitor);
+                }
+
+                const collectTimer = setInterval(() => {
+                    this.collectMetrics();
+                }, this.monitoringConfig.collectInterval);
+
+                this.monitoringTimers.push(collectTimer);
 
             console.log('性能监控已启动');
         }
@@ -1274,11 +1307,18 @@
         /**
          * 停止监控
          */
-        stopMonitoring() {
-            this.isMonitoring = false;
+            stopMonitoring() {
+                this.isMonitoring = false;
 
-            this.monitoringTimers.forEach(timer => clearInterval(timer));
-            this.monitoringTimers = [];
+                if (this.fpsAnimationFrameId !== null) {
+                    if (typeof this.cancelAnimationFrameFn === 'function') {
+                        this.cancelAnimationFrameFn(this.fpsAnimationFrameId);
+                    }
+                    this.fpsAnimationFrameId = null;
+                }
+
+                this.monitoringTimers.forEach(timer => clearInterval(timer));
+                this.monitoringTimers = [];
 
             console.log('性能监控已停止');
         }
